@@ -1,6 +1,7 @@
 \documentclass{article}
-\title{MyAgent: An agent submitted to the ANAC 2023 SCM league}
-\author{Your Team Member names, affiliations and emails}
+\usepackage{amsmath}
+\title{MATAgent: An agent submitted to the ANAC 2025 SCM league}
+\author{Tyrone Serapio, Arnie He, Mason Hagan, Musa Tahir}
 
 \begin{document}
 \maketitle
@@ -12,10 +13,40 @@
 	design and the evaluation of your agent.
 \end{abstract}
 \section{Introduction}
-\section{The Design of MyAgent}
-\subsection{Negotiation Choices}
-\subsection{Concurrent Negotiation}
-\subsection{Risk Management}
+We chose a CFR-based (Counterfactual Regret Minimization) approach for MATAgent, given CFR's suitability in extensive-form game-solving. In particular, our agent applies a tabular CFR to each bilateral negotiation in the OneShot framework. We discretize the continuous decision of ``how much and at what price” into a small finite set of actions, allowing it to learn a mixed strategy offline, and then simply sample from that strategy at the actual competition (runtime).
+\section{The Design of MATAgent}
+\subsection{Negotiation Moves}
+\par We treat each negotiation move as a pair of (Quantity, Price), both as a buyer and a seller. For an initial simple model, we use 10 quantities (as 10 is the maximum number of production lines) and 2 prices (min price and max price). We index them $a=0\ldots 19$ so that regret arrays fit in a size-20 numpy vector.
+\subsection{Information Sets}
+\par We represent the infosets as:
+\[
+I = (role,\ round,\ \mathrm{sign}(q_{\mathrm{offer}}-q_{\mathrm{need}}),\ \mathrm{sign}(p_{\mathrm{offer}}-p_{\mathrm{mid}})),
+\]
+where
+\begin{itemize}
+    \item sign() just maps to -1, 0, or +1
+    \item role indicates buyer or seller
+    \item round is the current negotiation step (we just make this from 0 to 19)
+    \item $q_{\mathrm{offer}}$ is the opponent’s last proposed quantity, $q_{\mathrm{need}}$ is the agent’s remaining need
+    \item $p_{\mathrm{offer}}$ is the opponent’s last price, $p_{\mathrm{mid}}=(p_{\min}+p_{\max})/2$.
+\end{itemize}
+Each of the $2\times 20\times 3\times 3=360$ infosets maps to its own regret and strategy vectors of length 20.
+\subsection{Offline CFR training}
+We train twice -- one for buyer, one for seller -- in pure self-play:
+\begin{enumerate}
+    \item Simulate iterations of a single negotiation tree (20 rounds).
+    \item At each infoset $I$, compute a strategy $\sigma_I(a)$ from accumulated positive regrets.
+    \item Use external-sampling: sample one action per infoset per pass, update only its regret and add the full reach‐probability product into a cumulative strategy sum.
+    \item At the end, normalise each $\mathrm{strategy\_sum}[I]$ to obtain the average strategy $\sigma_I$.
+\end{enumerate}
+In the end, we get a json file of the form
+\[
+\{\;I:\;[\sigma_I(0),\ldots,\sigma_I(19)]\;\}\,.
+\]
+For example, we might get: 
+\[
+\{\;I:\;[0.05,-1, \ldots,1.16]\;\}\,.
+\]
 \section{Evaluation}
 \section{Lessons and Suggestions}
 \section*{Conclusions}

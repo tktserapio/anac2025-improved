@@ -30,7 +30,6 @@ def build_action_set(
         raise ValueError("price_buckets must be >= 2")
     # generate evenly spaced prices (rounded to int)
     prices = np.linspace(p_min, p_max, price_buckets, dtype=int).tolist()
-    # cartesian product
     return [(q, p) for q in range(1, max_q + 1) for p in prices]
 
 
@@ -54,8 +53,6 @@ class CFRTrainer:
         self.price_buckets = price_buckets
         self.alpha = alpha  # weight on price term in utility
 
-        # Use delta‐price encoding {-1 … +1} only for relative comparisons
-        # but actual training now uses real price buckets
         self.action_set = build_action_set(max_q, -1, +1, price_buckets)
         self.n_actions = len(self.action_set)
 
@@ -71,7 +68,7 @@ class CFRTrainer:
         for t in range(iters):
             if t % 10000 == 0:
                 print(f"{t} iterations done")
-            for role in ("S", "B"):        # S = seller, B = buyer
+            for role in ("S", "B"): # S = seller, B = buyer
                 self._traverse(role)
 
     def average_strategy(self) -> Dict[str, List[float]]:
@@ -93,7 +90,7 @@ class CFRTrainer:
         price_samples = np.linspace(-1, 1, self.price_buckets, dtype=int).tolist()
         
         for round_no in range(20):
-            # fictitious “last offer” from opponent
+            # random “last offer” from opponent
             last_q = random.randint(1, self.max_q)
             last_p = random.choice(price_samples)
 
@@ -102,14 +99,12 @@ class CFRTrainer:
 
             I = info_key(role, round_no, qty_cmp, price_cmp)
 
-            # ------------- 3) current policy via regret matching
             sigma = self._get_strategy(I)
 
-            # ------------- 4) sample ACTION to “play” this pass
-            a_idx = np.random.choice(nA, p=sigma)
-            q_sel, p_sel = self.action_set[a_idx]     # (unused except for clarity)
+            a_idx = np.random.choice(nA, p=sigma) # action sampling
+            q_sel, p_sel = self.action_set[a_idx] # (unused except for clarity)
 
-            # ------------- 5) compute utility for *all* actions
+
             U = np.empty(nA, dtype=np.float64)
             for i, (q, p) in enumerate(self.action_set):
                 # quantity component
@@ -121,10 +116,9 @@ class CFRTrainer:
                 price_term = self.alpha * (p if role == "S" else -p)
                 U[i] = base + price_term
 
-            # ------------- 6) regret & strategy accumulation
-            u_ref = U[a_idx]                 # utility of the sampled action
+            u_ref = U[a_idx] # util
             self.regret_sum[I]   += U - u_ref  # vectorised counterfactual regrets
-            self.strategy_sum[I] += sigma      # reach-prob = 1 in ext-sampling
+            self.strategy_sum[I] += sigma 
 
     def _get_strategy(self, I: str) -> np.ndarray:
         r   = self.regret_sum[I]
@@ -139,21 +133,18 @@ class CFRTrainer:
             return (np.ones_like(x) / len(x)).tolist()
         return (x / s).tolist()
 
-# Runtime agent
 class CFROneShotAgent(OneShotAgent):
     """Agent that negotiates using a pre‑trained CFR policy."""
 
     def init(self):
-        # Load policy once per factory
         policy_path = pathlib.Path(__file__).with_suffix(".policy.json")
         if not policy_path.exists():
-            # Fallback to embedded empty dict (all infosets unseen)
+            # fallback to embedded empty dict (all infosets unseen)
             print("Policy not found.")
             self.policy: Dict[str, List[float]] = {}
         else:
             self.policy = json.loads(policy_path.read_text())
 
-        # For price comparisons we use mid‐price of input issues (they are same as output)
         issues = self.awi.current_input_issues or self.awi.current_output_issues
         self.price_min = issues[UNIT_PRICE].min_value
         self.price_max = issues[UNIT_PRICE].max_value
@@ -166,11 +157,10 @@ class CFROneShotAgent(OneShotAgent):
             price_buckets=3
         )
 
-        # Seed RNG reproducibly but unique per factory
+        # seeding 
         random.seed(hash(self.id) & 0xFFFF)
         np.random.seed(hash(self.id) & 0xFFFF)
 
-    # -------------------- HELPERS ----------------------------
     def _needed(self, n_id: str | None) -> int:
         if n_id in self.awi.current_negotiation_details.get("sell", {}):
             return self.awi.needed_sales
@@ -179,7 +169,6 @@ class CFROneShotAgent(OneShotAgent):
     def _infoset(self, role: str, state: SAOState, needed: int) -> str:
         offer = state.current_offer
         if offer is None:
-            # dummy values (treat as neutral)
             qty_cmp = price_cmp = 0
         else:
             qty_cmp = int(math.copysign(1, offer[QUANTITY] - needed)) if offer[QUANTITY] != needed else 0
@@ -198,7 +187,7 @@ class CFROneShotAgent(OneShotAgent):
     def _role(self, partner_id: str) -> str:
         return "S" if partner_id in self.awi.my_consumers else "B"
 
-    # -------------------- NEGOTIATION ------------------------
+
     def propose(self, negotiator_id: str, state: SAOState) -> Outcome | None:
         role = self._role(negotiator_id)
         needed = self._needed(negotiator_id)
@@ -221,16 +210,16 @@ class CFROneShotAgent(OneShotAgent):
         role = self._role(negotiator_id)
         I    = self._infoset(role, state, needed)
 
-        # Simple accept heuristic: if quantity <= need and price not terrible
+
         price_ok = (
             offer[UNIT_PRICE] <= self.mid_price if role == "B" else offer[UNIT_PRICE] >= self.mid_price
         )
         qty_ok = offer[QUANTITY] <= needed
-        # Accept if quantity fits need and price on our good side
+        # accept if quantity fits need and price on our good side
         if price_ok and qty_ok:
              return ResponseType.ACCEPT_OFFER
 
-        # Otherwise counter with CFR sample
+        # otherwise counter with CFR sample
         q, price = self._sample_action(I, role)
         q = min(max(1, q), needed)
         return SAOResponse(ResponseType.REJECT_OFFER, (q, self.awi.current_step, price))

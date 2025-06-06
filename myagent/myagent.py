@@ -23,7 +23,7 @@ class CFRAgent(cfr_acceptinc):
     that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
     """
 
-    _tau   = 0.2     # learning rate for trust EMA
+    _tau   = 0.4     # learning rate for trust EMA
     _floor = 0.1     # never drive trust to zero
 
     def init(self):

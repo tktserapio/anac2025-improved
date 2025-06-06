@@ -15,6 +15,8 @@ from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
 from scml.oneshot.agents import GreedySyncAgent, RandDistOneShotAgent, EqualDistOneShotAgent, SyncRandomOneShotAgent
 
+ACCEPT = ("ACCEPT", None) 
+
 def build_action_set(
     max_q: int,
     p_min: int,
@@ -30,7 +32,8 @@ def build_action_set(
         raise ValueError("price_buckets must be >= 2")
     # generate evenly spaced prices (rounded to int)
     prices = np.linspace(p_min, p_max, price_buckets, dtype=int).tolist()
-    return [(q, p) for q in range(1, max_q + 1) for p in prices]
+    actions = [(q, p) for q in range(1, max_q + 1) for p in prices]
+    return [ACCEPT] + actions
 
 
 def info_key(
@@ -78,7 +81,7 @@ class CFRTrainer:
         max_q: int = 10,
         price_buckets: int = 2,
         alpha: float = 0.5, 
-        save_interval: int = 10_000,
+        save_interval: int = 100_000,
         out_pattern: str = "cfr_oneshot_agent_iter_{}.policy.json",
     ):
         self.max_q = max_q
@@ -100,8 +103,8 @@ class CFRTrainer:
         self.PLOT_EXPLOITABILITY = True
         self.LOW_CASH_PROBABILITY = 0.2
 
-        self.save_interval = 10_000
-        self.out_pattern = "cfr_oneshot_agent_iter_{}.policy.json"
+        self.save_interval = 100_000
+        self.out_pattern = "cfr_oneshot_agent_acceptinc_iter_{}.policy.json"
 
     def train(self, iters: int = 100_000):
         for t in range(iters):
@@ -165,8 +168,21 @@ class CFRTrainer:
             a_idx = np.random.choice(nA, p=sigma) # action sampling
             q_sel, p_sel = self.action_set[a_idx] # (unused except for clarity)
 
+            last_offer_valid = (last_q is not None)
+            if last_offer_valid:
+                if last_q == needed:
+                    base_acc = 1.0
+                else:
+                    base_acc = -abs(last_q - needed) / needed
+                price_acc = self.alpha * (last_p if role=="S" else -last_p)
+                util_accept = base_acc + price_acc
+            else:
+                util_accept = 0.0
+
             U = np.empty(nA, dtype=np.float64)
-            for i, (q, p) in enumerate(self.action_set):
+            U[0] = util_accept
+
+            for i, (q, p) in enumerate(self.action_set[1:], start=1):
                 # quantity component
                 if q == needed:
                     base = 1.0
@@ -198,7 +214,7 @@ class CFROneShotAgent(OneShotAgent):
     """Agent that negotiates using a pre‑trained CFR policy."""
 
     def init(self):
-        policy_path = pathlib.Path(__file__).with_name("cfr_oneshot_agent_iter_300000.policy.json")
+        policy_path = pathlib.Path(__file__).with_name("cfr_oneshot_agent_acceptinc.policy.json")
         if not policy_path.exists():
             # fallback to embedded empty dict (all infosets unseen)
             print("Policy not found.")
@@ -248,23 +264,21 @@ class CFROneShotAgent(OneShotAgent):
         low_cash = int(self.awi.current_balance < 1000)  # or any threshold you define
 
         return info_key(role, phase, needed, qty_cmp, price_cmp, low_cash)    
-
     
 
-    def _sample_action(self, infoset: str, role: str, need : int) -> Tuple[int, int]:
+    def _sample_action(self, infoset: str, role: str, need : int):
         pmf = self.policy.get(infoset) # this gets a distribution we can sample an action from
         if pmf is None: # if there is no policy, we fall back
             if role == "B":                          # we are BUYER (need inputs)
                 q   = max(1, need)                   # ask for the full remaining need
                 p   = self.price_max                 # be willing to pay the max band price
-                return (q, p)
             else:                                    # we are SELLER
                 q   = max(1, need)
                 p   = self.price_min                 # entice consumers with lowest price
-                return (q, p)
-        else:
-            idx = np.random.choice(len(self.action_set), p=pmf) #sample from distribution
-        return self.action_set[idx]
+            fallback_idx = len(self.action_set) - 1
+            return fallback_idx, (q,p)
+        idx = np.random.choice(len(self.action_set), p=pmf) #sample from distribution
+        return idx, self.action_set[idx]
 
     def _role(self, partner_id: str) -> str:
         #is [partner_id] a seller or a buyer?
@@ -277,36 +291,9 @@ class CFROneShotAgent(OneShotAgent):
         if needed <= 0:
             return None
         I    = self._infoset(role, state, needed)
-        q, price = self._sample_action(I, role, needed)
+        idx, (q, price) = self._sample_action(I, role, needed)
         q = min(max(1, q), needed)  # never offer more than remaining need
         return (q, self.awi.current_step, price)
-
-
-    def respond(self, negotiator_id: str, state: SAOState, source: str = "") -> ResponseType | SAOResponse:
-        offer = state.current_offer
-        if offer is None:
-            return ResponseType.REJECT_OFFER
-
-        needed = self._needed(negotiator_id)
-        if needed <= 0:
-            return ResponseType.END_NEGOTIATION
-
-        role = self._role(negotiator_id)
-
-        price_ok = (
-            offer[UNIT_PRICE] <= self.price_max if role == "B"
-            else offer[UNIT_PRICE] >= self.price_min
-        )
-        qty_ok = offer[QUANTITY] <= needed
-        # accept if quantity fits need and price on our good side
-        if price_ok and qty_ok:
-            return ResponseType.ACCEPT_OFFER
-
-        # otherwise counter with CFR sample
-        I = self._infoset(role, state, needed)
-        q, price = self._sample_action(I, role, needed)
-        q = min(max(1, q), needed)
-        return SAOResponse(ResponseType.REJECT_OFFER, (q, self.awi.current_step, price))
 
 def _train_cli():
     ap = argparse.ArgumentParser()
@@ -314,7 +301,7 @@ def _train_cli():
     ap.add_argument("--iters", type=int, default=200_000)
     ap.add_argument("--save_interval", type=int, default=10_000, help="Save intermediate policy every N iterations")
     ap.add_argument("--out_pattern", type=str, default="cfr_oneshot_agent_iter_{}.policy.json", help="Output file pattern for intermediate policies")
-    ap.add_argument("--out", type=str, default="cfr_oneshot_agent.policy.json")
+    ap.add_argument("--out", type=str, default="cfr_oneshot_agent2.policy.json")
     args = ap.parse_args()
 
     if args.train:
@@ -339,4 +326,4 @@ def _train_cli():
 if __name__ == "__main__":
     _train_cli()
 
-# python3 cfr_oneshot_agent.py --train --iters 300000 --save_interval 50000 --out_pattern "cfr_oneshot_agent_iter_{}.policy.json" --out "cfr_oneshot_agent.policy.json"
+# python3 cfr_oneshot_agent_acceptinc.py --train --iters 300000 --save_interval 300000 --out_pattern "cfr_oneshot_agent_acceptinc_iter_{}.policy.json" --out "cfr_oneshot_agent_acceptinc.policy.json"

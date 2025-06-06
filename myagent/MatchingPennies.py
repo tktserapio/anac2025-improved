@@ -341,7 +341,7 @@ class MyAgent(OneShotSyncAgent):
     def init(self):
         """Called once after the agent-world interface is initialized"""
 
-        self.verbose = True
+        self.verbose = False
         self.first = True
         self.days = 0
         self.expected_contract_quantity = [0] * 25

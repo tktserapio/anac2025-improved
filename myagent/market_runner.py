@@ -16,29 +16,26 @@ import numpy as np
 agent_types = [
     SyncRandomOneShotAgent,
     CFRAgent,
+    RandDistOneShotAgent,
     mp
 ]
 
-world = SCML2024OneShotWorld(
-    **SCML2024OneShotWorld.generate(
-        agent_types=agent_types, n_steps=50
-    ),
-    construct_graphs=True,
-)
-world.run()
-world.plot_stats(pertype=True)
-# world.plot_stats("bankrupt", ylegend=1.25)
-world_agent_scores = world.scores()
-print(world_agent_scores)
+for i in range(10):
+    world = SCML2024OneShotWorld(
+        **SCML2024OneShotWorld.generate(
+            agent_types=agent_types, n_steps=50
+        ),
+        construct_graphs=True,
+    )
 
-cfr_keys = [agent for agent in world_agent_scores if "CFR" in agent]
-print("CFR Agent Keys:", cfr_keys)
-print({k: (v[0], v[-1]) for k, v in world.stats.items() if "CFR" in k})
+    world.run()
+    world.plot_stats(pertype=True)
+    # world.plot_stats("bankrupt", ylegend=1.25)
+    world_agent_scores = world.scores()
 
-plt.show()
-
-improved_shortfalls = {'shortfall_penalty_04CFR@1': (np.float64(0.0), np.float64(0.0)), 
-'shortfall_penalty_06CFR@1': (np.float64(0.0), np.float64(0.0)), 
-'shortfall_penalty_07CFR@1': (np.float64(0.0), np.float64(0.0)), 
-'shortfall_penalty_08CFR@1': (np.float64(0.0), np.float64(45.70455694764701)),
-'shortfall_penalty_09CFR@1': (np.float64(14.128381751607597), np.float64(0.0))}
+    cfr_keys = [agent for agent in world_agent_scores if "CFR" in agent]
+    print("CFR Agent Keys:", cfr_keys)
+    for cfr in cfr_keys:
+        shortfall_stats = {k: (v[0], v[-1]) for k, v in world.stats.items() if "CFR" in k and "shortfall_penalty" in k}
+        score = world_agent_scores.get(cfr, None)
+        print(f"{cfr}: score = {score}, shortfall penalties = {shortfall_stats}")

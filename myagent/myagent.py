@@ -10,6 +10,7 @@ import pickle
 import torch
 # from cfr_oneshot_agent import CFROneShotAgent
 from cfr_oneshot_agent_acceptinc import CFROneShotAgent as cfr_acceptinc
+from cfr_oneshot_agent_acceptinc_util import CFROneShotAgent as cfr_acceptinc_util
 from collections import defaultdict
 
 from negmas import SAOResponse, ResponseType, Outcome, SAOState
@@ -17,7 +18,7 @@ from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
 # from MatchingPennies import MyAgent as mp
 
-class CFRAgent(cfr_acceptinc):
+class CFRAgent(cfr_acceptinc_util):
     """
     This is the only class you *need* to implement. The current skeleton simply loads a single model
     that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
@@ -87,45 +88,46 @@ class CFRAgent(cfr_acceptinc):
     def respond(
         self,
         negotiator_id: str,
-        state,
+        state: SAOState,
         source: str = ""
     ) -> ResponseType | SAOResponse:
+        """
+        Decide whether to accept the opponent’s last offer or counter with a CFR action,
+        based on a direct comparison of expected profit.
+        """
+
+        # 1) Get the opponent’s last offer
         offer = state.current_offer
         if offer is None:
             return ResponseType.REJECT_OFFER
 
-        # how many units we still need for THIS negotiation role
+        # 2) How many units do I still need?
         needed = self._needed(negotiator_id)
         if needed <= 0:
             return ResponseType.END_NEGOTIATION
 
-        role = self._role(negotiator_id)                 # "B" or "S"
-        infoset = self._infoset(role, state, needed)
+        # 3) Identify my role and infoset
+        role = self._role(negotiator_id)            # "B" (buyer) or "S" (seller)
+        I    = self._infoset(role, state, needed)
 
-        # ───────────────── 1) sample from CFR policy  ────────────
-        idx, action = self._sample_action(infoset, role, needed)
-        #   • idx == 0  → policy says “ACCEPT”
-        #   • action is (q, price) for idx > 0
+        # 4) Sample an action from the CFR policy (or fallback)
+        idx, (q, price) = self._sample_action(I, role, needed)
+        # clamp quantity so we never overshoot
+        q = min(max(1, q), needed)
+        counter_offer = (q, self.awi.current_step, price)
 
-        # ───────────────── 2) obey policy if it says ACCEPT ─────
-        if idx == 0 and offer[QUANTITY] <= needed:
+        # 5) Compute expected profit of ACCEPT vs. COUNTER
+        is_buy = (role == "B")
+        # profit if we take the opponent’s offer
+        profit_accept  = self.ufun.from_offers([offer],         [is_buy])
+        # profit if we instead play our sampled CFR action
+        profit_counter = self.ufun.from_offers([counter_offer], [is_buy])
+
+        # 6) Choose the action that maximizes profit
+        if profit_accept >= profit_counter:
             return ResponseType.ACCEPT_OFFER
 
-        # ───────────────── 3) quick pragmatic accept fallback ───
-        price_ok = (
-            offer[UNIT_PRICE] <= self.price_max if role == "B"
-            else offer[UNIT_PRICE] >= self.price_min
-        )
-        if offer[QUANTITY] <= needed and price_ok:
-            return ResponseType.ACCEPT_OFFER
-
-        # ───────────────── 4) otherwise counter with CFR offer ──
-        q, price = action                      # action unpack
-        q = min(max(1, q), needed)             # clamp to remaining need
-        return SAOResponse(
-            ResponseType.REJECT_OFFER,
-            (q, self.awi.current_step, price)
-        )
+        return SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
 
     # def respond(self, negotiator_id, state, src=""):
     #     offer = state.current_offer

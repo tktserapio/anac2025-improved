@@ -24,7 +24,7 @@ class CFRAgent(cfr_acceptinc_util):
     that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
     """
 
-    _tau   = 0.4     # learning rate for trust EMA
+    _tau   = 0.5     # learning rate for trust EMA
     _floor = 0.1     # never drive trust to zero
 
     def init(self):
@@ -66,97 +66,61 @@ class CFRAgent(cfr_acceptinc_util):
         I = self._infoset(role, state, need)
         idx, (q, price) = self._sample_action(I, role, need)
         q = min(max(1, q), need)
-        return (q, self.awi.current_step, price)
 
-    # def propose(self, negotiator_id, state):
-    #     role   = self._role(negotiator_id)
+        self.outstanding[negotiator_id] += q
         
-    #     need   = self._needed(negotiator_id) - self.outstanding[negotiator_id]
-    #     if need <= 0:
-    #         return None
-
-    #     offer_cap = self._quota(negotiator_id, role)
-    #     need      = min(need, offer_cap)
-
-    #     I = self._infoset(role, state, need)
-    #     q, price = self._sample_action(I, role, need)
-    #     q = min(q, need)
-    #     self.outstanding[negotiator_id] += q
-    #     return (q, self.awi.current_step, price)
+        return (q, self.awi.current_step, price)
 
     # RESPOND WITH NEW TRAINING (includes ACCEPT in CFR):
     def respond(
         self,
         negotiator_id: str,
-        state: SAOState,
+        state,
         source: str = ""
     ) -> ResponseType | SAOResponse:
-        """
-        Decide whether to accept the opponent’s last offer or counter with a CFR action,
-        based on a direct comparison of expected profit.
-        """
-
-        # 1) Get the opponent’s last offer
         offer = state.current_offer
         if offer is None:
             return ResponseType.REJECT_OFFER
 
-        # 2) How many units do I still need?
+        # how many units we still need for THIS negotiation role
         needed = self._needed(negotiator_id)
         if needed <= 0:
             return ResponseType.END_NEGOTIATION
 
-        # 3) Identify my role and infoset
-        role = self._role(negotiator_id)            # "B" (buyer) or "S" (seller)
-        I    = self._infoset(role, state, needed)
+        role = self._role(negotiator_id)                 # "B" or "S"
+        infoset = self._infoset(role, state, needed)
 
-        # 4) Sample an action from the CFR policy (or fallback)
-        idx, (q, price) = self._sample_action(I, role, needed)
-        # clamp quantity so we never overshoot
-        q = min(max(1, q), needed)
-        counter_offer = (q, self.awi.current_step, price)
+        # ───────────────── 1) sample from CFR policy  ────────────
+        idx, action = self._sample_action(infoset, role, needed)
+        #   • idx == 0  → policy says “ACCEPT”
+        #   • action is (q, price) for idx > 0
 
-        # 5) Compute expected profit of ACCEPT vs. COUNTER
-        is_buy = (role == "B")
-        # profit if we take the opponent’s offer
-        profit_accept  = self.ufun.from_offers([offer],         [is_buy])
-        # profit if we instead play our sampled CFR action
-        profit_counter = self.ufun.from_offers([counter_offer], [is_buy])
-
-        # 6) Choose the action that maximizes profit
-        if profit_accept >= profit_counter:
+        # ───────────────── 2) obey policy if it says ACCEPT ─────
+        if idx == 0 and offer[QUANTITY] <= needed:
             return ResponseType.ACCEPT_OFFER
 
-        return SAOResponse(ResponseType.REJECT_OFFER, counter_offer)
+        # ───────────────── 3) quick pragmatic accept fallback ───
+        price_ok = (
+            offer[UNIT_PRICE] <= self.price_max if role == "B"
+            else offer[UNIT_PRICE] >= self.price_min
+        )
+        if not price_ok and role=="B":
+            # if we really need the supply but partner is low‐trust,
+            # be *more* reluctant to accept from them
+            threshold = self.trust[partner_id]
+            if random.random() > threshold:
+                return ResponseType.REJECT_OFFER
+        
+        if offer[QUANTITY] <= needed and price_ok:
+            return ResponseType.ACCEPT_OFFER
 
-    # def respond(self, negotiator_id, state, src=""):
-    #     offer = state.current_offer
-    #     if offer is None:
-    #         return ResponseType.REJECT_OFFER
-
-    #     role   = self._role(negotiator_id)
-    #     need   = self._needed(negotiator_id)
-    #     if need <= 0:
-    #         return ResponseType.END_NEGOTIATION
-
-    #     # price/qty filter identical to your previous version
-    #     price_ok = (offer[UNIT_PRICE] <= self.price_max if role == "B"
-    #                 else offer[UNIT_PRICE] >= self.price_min)
-    #     qty_ok   = offer[QUANTITY] <= need
-
-    #     if price_ok and qty_ok:
-    #         if role == "B":
-    #             self.rem_buy  -= offer[QUANTITY]
-    #         else:
-    #             self.rem_sell -= offer[QUANTITY]
-    #         return ResponseType.ACCEPT_OFFER
-
-    #     # counter-offer via CFR
-    #     I = self._infoset(role, state, need)
-    #     q, price = self._sample_action(I, role, need)
-    #     q = min(q, need)
-    #     return SAOResponse(ResponseType.REJECT_OFFER,
-    #                        (q, self.awi.current_step, price))
+        # ───────────────── 4) otherwise counter with CFR offer ──
+        q, price = action                      # action unpack
+        q = min(max(1, q), needed)             # clamp to remaining need
+        return SAOResponse(
+            ResponseType.REJECT_OFFER,
+            (q, self.awi.current_step, price)
+        )
 
     def _update_trust(self, pid: str, accepted: bool):
         prev = self.trust[pid]
@@ -165,7 +129,12 @@ class CFRAgent(cfr_acceptinc_util):
     def on_negotiation_success(self, contract, mechanism):
         partner = next(p for p in contract.partners if p != self.id)
         self._update_trust(partner, accepted=True)
-        self.outstanding[partner] = 0           # clear any pending qty
+        self.outstanding[partner] = 0
+
+        if partner in self.awi.my_suppliers:
+            self.rem_buy = max(0, self.rem_buy - contract.agreement["quantity"])
+        else:
+            self.rem_sell = max(0, self.rem_sell - contract.agreement["quantity"])
 
     def on_negotiation_failure(self,
                                partners,        # list of IDs

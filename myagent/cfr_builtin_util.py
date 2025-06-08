@@ -14,6 +14,7 @@ from negmas import SAOResponse, ResponseType, Outcome, SAOState
 from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
 from scml.oneshot.agents import GreedySyncAgent, RandDistOneShotAgent, EqualDistOneShotAgent, SyncRandomOneShotAgent
+from scml.oneshot.ufun import OneShotUFun as OneShotUtilityFunction
 
 ACCEPT = ("ACCEPT", None) 
 
@@ -132,76 +133,73 @@ class CFRTrainer:
 
     def _traverse(self, role: str):
         """
-        One pass of external-sampling CFR with a price-aware utility:
-          U(q,p) = base_match   ±  α*(p - mid_price)
-        where base_match = +1 if q==need else -|q-need|/need.
+        CFR pass for one opponent, but utility = true OneShot profit
+        over a 3-partner pseudo‐market: you + 2 dummy partners
+        each delivering equal share of your remaining need.
         """
-
         nA = self.n_actions
+        # total quantity you need this day (random env sample)
         needed = random.randint(1, self.max_q)
+        # relative price buckets for simulating opponent
         price_samples = np.linspace(-1, 1, self.price_buckets, dtype=int).tolist()
-        
-        opp    = random.choices(ARCHES, WEIGHTS)[0]
+        # pick an opponent archetype for all 20 rounds
+        opp = random.choices(ARCHES, WEIGHTS)[0]
         last_offer = None
 
-        beta = 10
-        
+        # dummy OneShot utility
+        ufun = OneShotUtilityFunction()
+
         for round_no in range(20):
-            # sample from opp in a distribution
-            last_q, last_p = opponent_policy(opp, round_no, needed, price_samples, last_offer)
+            # ─── 1) simulate last opponent offer ───────────────────
+            last_q, last_p = opponent_policy(
+                opp, round_no, needed, price_samples, last_offer
+            )
             last_offer = (last_q, last_p)
-            
+
+            # ─── 2) build infoset key ───────────────────────────────
             qty_cmp   = 0 if last_q == needed else int(math.copysign(1, last_q - needed))
             price_cmp = 0 if last_p == 0     else int(math.copysign(1, last_p))
-            low_cash = int(random.random() < self.LOW_CASH_PROBABILITY) #simlated probability of having a low cash balance
-
             if round_no == 0:
                 phase = 0
-            elif round_no <= 1:
-                phase = 1
             elif round_no <= 2:
+                phase = 1
+            elif round_no <= 7:
                 phase = 2
             else:
                 phase = 3
+            low_cash = int(random.random() < self.LOW_CASH_PROBABILITY)
+
             I = info_key(role, phase, needed, qty_cmp, price_cmp, low_cash)
 
+            # ─── 3) get regret‐matching policy and sample an action ───
             sigma = self._get_strategy(I)
+            a_idx = np.random.choice(nA, p=sigma)
+            # (we don't use q_sel, p_sel immediately here)
 
-            a_idx = np.random.choice(nA, p=sigma) # action sampling
-            q_sel, p_sel = self.action_set[a_idx] # (unused except for clarity)
-
-            if last_offer is not None:
-                # quantity mismatch term
-                if last_q == needed:
-                    base_acc = 1.0
-                else:
-                    base_acc = -abs(last_q - needed) / needed
-                # price term: buyer wants low p (−p), seller wants high p (+p)
-                price_acc = self.alpha * (last_p if role == "S" else -last_p)
-                # Convert “matching q” into real money + mismatch penalty:
-                pay_or_rev_acc = (- last_q * last_p) if role == "B" else (+ last_q * last_p)
-                util_accept    = pay_or_rev_acc - beta * abs(last_q - needed)
-            else:
-                util_accept = 0.0
-
+            # ─── 4) build the *true* utility vector U[0…nA-1] ──────
             U = np.empty(nA, dtype=np.float64)
-            U[0] = util_accept   # idx 0 = ACCEPT
+            is_buy = (role == "B")
 
-            # NEW (real‐money utility)
-            for i, (q, p) in enumerate(self.action_set[1:], start=1):
-                # 1) Bill or pay: BUYER pays q*p (a negative utility), SELLER receives q*p
-                pay_or_rev = (- q * p) if role == "B" else (+ q * p)
+            for i, (q_i, p_i) in enumerate(self.action_set):
+                # main offer = your (q_i, time=0, p_i)
+                main = (q_i, 0, p_i)
 
-                # 2) A “mismatch penalty” of β dollars per unit short (or over‐buy)
-                #    β is chosen so that one‐unit mismatch ≈ 5× the entire price spread
-                mismatch = abs(q - needed)
-                mismatch_penalty = - beta * mismatch
+                # split your *remaining* need (needed−q_i) across 2 dummies
+                rem = max(0, needed - q_i)
+                share = rem // 2
+                extra = rem - 2*share
+                dummy1 = (share + extra, 0, p_i)
+                dummy2 = (share,        0, p_i)
 
-                U[i] = pay_or_rev + mismatch_penalty
+                offers = [main, dummy1, dummy2]
+                buying_flags = [is_buy, is_buy, is_buy]
 
-            u_ref = U[a_idx] # util
-            self.regret_sum[I]   += U - u_ref  # vectorised counterfactual regrets
-            self.strategy_sum[I] += sigma 
+                U[i] = ufun.from_offers(offers, buying_flags)
+
+            # ─── 5) CFR updates ────────────────────────────────────
+            u_ref = U[a_idx]
+            self.regret_sum[I]   += (U - u_ref)
+            self.strategy_sum[I] += sigma
 
     def _get_strategy(self, I: str) -> np.ndarray:
         r   = self.regret_sum[I]
@@ -220,7 +218,7 @@ class CFROneShotAgent(OneShotAgent):
     """Agent that negotiates using a pre‑trained CFR policy."""
 
     def init(self):
-        policy_path = pathlib.Path(__file__).with_name("cfr_util_v2.policy.json")
+        policy_path = pathlib.Path(__file__).with_name("cfr_util.policy.json")
         if not policy_path.exists():
             # fallback to embedded empty dict (all infosets unseen)
             print("Policy not found.")
@@ -231,6 +229,7 @@ class CFROneShotAgent(OneShotAgent):
         issues = self.awi.current_input_issues or self.awi.current_output_issues
         self.price_min = issues[UNIT_PRICE].min_value
         self.price_max = issues[UNIT_PRICE].max_value
+        print(f"Price_min: {self.price_min}", f"Price_max: {self.price_max}")
         self.mid_price = (self.price_min + self.price_max) // 2
         self.action_set = build_action_set(
             max_q=self.awi.n_lines,
@@ -257,16 +256,16 @@ class CFROneShotAgent(OneShotAgent):
         step = state.step
         if step == 0:
             phase = 0  # initial
-        elif step <= 1:
-            phase = 1  # early
         elif step <= 2:
+            phase = 1  # early
+        elif step <= 7:
             phase = 2  # mid
         else:
             phase = 3  # late
 
         
         #TODO: set low cash flag according to balance
-        low_cash = int(self.awi.current_balance < 5000)  # or any threshold you define
+        low_cash = int(self.awi.current_balance < 1000)  # or any threshold you define
 
         return info_key(role, phase, needed, qty_cmp, price_cmp, low_cash)    
     
@@ -274,6 +273,7 @@ class CFROneShotAgent(OneShotAgent):
     def _sample_action(self, infoset: str, role: str, need : int):
         pmf = self.policy.get(infoset) # this gets a distribution we can sample an action from
         if pmf is None: # if there is no policy, we fall back
+            print("Fallback!")
             if role == "B":                          # we are BUYER (need inputs)
                 q   = max(1, need)                   # ask for the full remaining need
                 p   = self.price_max                 # be willing to pay the max band price
@@ -283,6 +283,7 @@ class CFROneShotAgent(OneShotAgent):
             fallback_idx = len(self.action_set) - 1
             return fallback_idx, (q,p)
         idx = np.random.choice(len(self.action_set), p=pmf) #sample from distribution
+        print("Fallback not used.")
         return idx, self.action_set[idx]
 
     def _role(self, partner_id: str) -> str:
@@ -320,4 +321,4 @@ def _train_cli():
 if __name__ == "__main__":
     _train_cli()
 
-# python3 cfr_oneshot_agent_acceptinc_util.py --train --iters 300000 --save_interval 150000 --out "cfr_util_v2.policy.json"
+# python3 cfr_builtin_util.py --train --iters 300000 --save_interval 300000 --out "cfr_builtin_util.policy.json"

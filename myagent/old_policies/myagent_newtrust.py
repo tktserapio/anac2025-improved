@@ -8,9 +8,11 @@ the authors and the ANAC 2024 SCML competition.
 """
 import pickle
 import torch
+import random
+from typing import Callable, List
 # from cfr_oneshot_agent import CFROneShotAgent
+from cfr_oneshot_agent_acceptinc_util import CFROneShotAgent as cfr_acceptinc_util
 from cfr_builtin_util import CFROneShotAgent as cfr_builtin_util
-from myagent import CFRAgentMain as MyAgent
 from collections import defaultdict
 
 from negmas import SAOResponse, ResponseType, Outcome, SAOState
@@ -18,7 +20,40 @@ from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
 # from MatchingPennies import MyAgent as mp
 
-class CFRAgent(cfr_builtin_util):
+class ThompsonTrustAllocator:
+    def __init__(self):
+        # Beta(1,1) priors for every partner
+        self.alpha = defaultdict(lambda: 1)
+        self.beta  = defaultdict(lambda: 1)
+
+    def update(self, partner_id: str, accepted: bool):
+        if accepted:
+            self.alpha[partner_id] += 1
+        else:
+            self.beta[partner_id] += 1
+
+    def allocate(self, partners: list[str], need: int, 
+                 utility_fn: Callable[[str], float]) -> dict[str,int]:
+        # 1) Sample acceptance probabilities
+        ps = {p: random.betavariate(self.alpha[p], self.beta[p]) for p in partners}
+        # 2) Get per‐unit utilities (could be 1.0 or CFR‐based expected profit)
+        us = {p: utility_fn(p) for p in partners}
+        # 3) Compute weights and normalize
+        wsum = sum(ps[p] * us[p] for p in partners)
+        if wsum <= 0:
+            # fallback: equal share
+            base = need // len(partners)
+            return {p: base for p in partners}
+        quotas = {}
+        for p in partners:
+            quotas[p] = int((ps[p] * us[p] / wsum) * need)
+        # 4) fix rounding to sum to `need`
+        assigned = sum(quotas.values())
+        for p in random.sample(partners, need - assigned):
+            quotas[p] += 1
+        return quotas
+
+class CFRAgentTrust(cfr_acceptinc_util):
     """
     This is the only class you *need* to implement. The current skeleton simply loads a single model
     that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
@@ -30,22 +65,12 @@ class CFRAgent(cfr_builtin_util):
     def init(self):
         super().init()
         self.trust = defaultdict(lambda: 0.5)
+        self.trust_alloc = ThompsonTrustAllocator()
         self._daily_reset()
 
     def before_step(self):
-
-        price_min = self.awi.current_input_issues[UNIT_PRICE].min_value
-        price_max = self.awi.current_input_issues[UNIT_PRICE].max_value
-        mu_price  = (price_min + price_max) / 2
-
-        mu_prod_c  = self.ufun.production_cost
-        mu_disp_c  = self.ufun.disposal_cost
-        mu_store_c = self.ufun.storage_cost
-        mu_short   = self.ufun.shortfall_penalty
-
-        n_partners = len(self.awi.my_consumers) if self.awi.my_consumers else len(self.awi.my_suppliers)
-
         super().before_step()
+        self.trust_alloc = ThompsonTrustAllocator()
         self._daily_reset()
 
     def _daily_reset(self):
@@ -65,22 +90,33 @@ class CFRAgent(cfr_builtin_util):
         return max(1, int(round(need * my_w / total_w)))
 
     # PROPOSE WITH NEW TRAINING
-    def propose(self, negotiator_id, state):
-        role   = self._role(negotiator_id)
-        
-        need   = self._needed(negotiator_id) - self.outstanding[negotiator_id]
-        if need <= 0:
+    def propose(self, negotiator_id: str, state: SAOState) -> Outcome | None:
+        role = self._role(negotiator_id)
+        # list of all same‐role partners
+        partners = (
+            list(self.awi.my_consumers)
+            if role == "S"
+            else list(self.awi.my_suppliers)
+        )
+        total_need = self.rem_sell if role=="S" else self.rem_buy
+        if total_need <= 0:
             return None
 
-        offer_cap = self._quota(negotiator_id, role)
-        need      = min(need, offer_cap)
+        # compute per‐unit utility (we just use 1.0 here, but you could
+        # plug in an estimate from your CFR policy or any heuristic)
+        utility_fn = lambda p: 1.0
 
-        I = self._infoset(role, state, need)
-        idx, (q, price) = self._sample_action(I, role, need)
-        q = min(max(1, q), need)
+        # get today's quota via Thompson trust
+        quotas = self.trust_alloc.allocate(partners, total_need, utility_fn)
+        q_i = quotas.get(negotiator_id, 0)
+        if q_i <= 0:
+            return None
 
+        # Generate CFR‐based counter‐offer for q_i
+        I = self._infoset(role, state, q_i)
+        idx, (q, price) = self._sample_action(I, role, q_i)
+        q = min(max(1, q), q_i)
         self.outstanding[negotiator_id] += q
-        
         return (q, self.awi.current_step, price)
 
     # RESPOND WITH NEW TRAINING (includes ACCEPT in CFR):
@@ -140,27 +176,24 @@ class CFRAgent(cfr_builtin_util):
 
     def on_negotiation_success(self, contract, mechanism):
         partner = next(p for p in contract.partners if p != self.id)
-        self._update_trust(partner, accepted=True)
+        # update trust
+        self.trust_alloc.update(partner, accepted=True)
+        # clear outstanding
         self.outstanding[partner] = 0
-
-        if partner in self.awi.my_suppliers:
-            self.rem_buy = max(0, self.rem_buy - contract.agreement["quantity"])
+        # decrement remaining need
+        if partner in self.awi.my_consumers:
+            self.rem_sell -= contract.agreement["quantity"]
         else:
-            self.rem_sell = max(0, self.rem_sell - contract.agreement["quantity"])
+            self.rem_buy  -= contract.agreement["quantity"]
 
-    def on_negotiation_failure(self,
-                               partners,        # list of IDs
-                               annotation,      # dict or None
-                               mechanism,       # SAO mechanism object
-                               state):          # final SAOState
-        """
-        Called by NegMAS when a bilateral negotiation ends without agreement.
-        We lower trust for the partner(s) and clear any outstanding quantity.
-        """
+    def on_negotiation_failure(
+        self,
+        partners, annotation, mechanism, state
+    ):
         for pid in partners:
             if pid == self.id:
                 continue
-            self._update_trust(pid, accepted=False)
+            self.trust_alloc.update(pid, accepted=False)
             self.outstanding[pid] = 0
 
 
@@ -168,5 +201,4 @@ if __name__ == "__main__":
     import sys
     from helpers.runner import run
 
-    # run([CFRAgent], sys.argv[1] if len(sys.argv) > 1 else "oneshot")
-    run([CFRAgent, MyAgent], sys.argv[1] if len(sys.argv) > 1 else "oneshot")
+    run([CFRAgent], sys.argv[1] if len(sys.argv) > 1 else "oneshot")

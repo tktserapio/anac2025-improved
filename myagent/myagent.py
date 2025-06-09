@@ -9,9 +9,10 @@ the authors and the ANAC 2024 SCML competition.
 import pickle
 import torch
 # from cfr_oneshot_agent import CFROneShotAgent
-from cfr_oneshot_agent_acceptinc import CFROneShotAgent as cfr_acceptinc
+# from cfr_oneshot_agent_acceptinc import CFROneShotAgent as cfr_acceptinc
 from cfr_oneshot_agent_acceptinc_util import CFROneShotAgent as cfr_acceptinc_util
-from cfr_builtin_util import CFROneShotAgent as cfr_builtin_util
+# from cfr_builtin_util import CFROneShotAgent as cfr_builtin_util
+from cfr_selfplay import CFROneShotAgent as cfr_selfplay
 from collections import defaultdict
 
 from negmas import SAOResponse, ResponseType, Outcome, SAOState
@@ -19,7 +20,7 @@ from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
 # from MatchingPennies import MyAgent as mp
 
-class CFRAgent(cfr_acceptinc_util):
+class CFRAgentMain(cfr_selfplay):
     """
     This is the only class you *need* to implement. The current skeleton simply loads a single model
     that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
@@ -66,7 +67,6 @@ class CFRAgent(cfr_acceptinc_util):
 
         I = self._infoset(role, state, need)
         idx, (q, price) = self._sample_action(I, role, need)
-        print(f"Price offer: {price}")
         q = min(max(1, q), need)
 
         self.outstanding[negotiator_id] += q
@@ -96,7 +96,6 @@ class CFRAgent(cfr_acceptinc_util):
         idx, action = self._sample_action(infoset, role, needed)
         #   • idx == 0  → policy says “ACCEPT”
         #   • action is (q, price) for idx > 0
-
         # ───────────────── 2) obey policy if it says ACCEPT ─────
         if idx == 0 and offer[QUANTITY] <= needed:
             return ResponseType.ACCEPT_OFFER
@@ -118,7 +117,6 @@ class CFRAgent(cfr_acceptinc_util):
 
         # ───────────────── 4) otherwise counter with CFR offer ──
         q, price = action                      # action unpack
-        print(f"Price counter-offer: {price}")
         q = min(max(1, q), needed)             # clamp to remaining need
         return SAOResponse(
             ResponseType.REJECT_OFFER,
@@ -159,5 +157,4 @@ if __name__ == "__main__":
     import sys
     from helpers.runner import run
 
-    # run([CFRAgent], sys.argv[1] if len(sys.argv) > 1 else "oneshot")
     run([CFRAgent], sys.argv[1] if len(sys.argv) > 1 else "oneshot")

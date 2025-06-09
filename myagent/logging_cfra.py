@@ -1,6 +1,5 @@
 # logging_cfra.py
-
-from myagent import CFRAgent
+from myagent import CFRAgentMain as CFRAgent
 import matplotlib.pyplot as plt
 from negmas import SAOResponse, ResponseType, Outcome, SAOState
 

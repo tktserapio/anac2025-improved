@@ -284,7 +284,7 @@ class CFROneShotAgent(OneShotAgent):
     """Agent that negotiates using a pre‑trained CFR policy."""
 
     def init(self):
-        policy_path = pathlib.Path(__file__).with_name("cfr_util_iter_100000.policy.json")
+        policy_path = pathlib.Path(__file__).with_name("cfr_builtin_util.policy.json")
         if not policy_path.exists():
             # fallback to embedded empty dict (all infosets unseen)
             print("Policy not found.")
@@ -349,7 +349,7 @@ class CFROneShotAgent(OneShotAgent):
 
         
         #TODO: set low cash flag according to balance
-        low_cash = int(self.awi.current_balance < 4000)  # or any threshold you define
+        low_cash = int(self.awi.current_balance < 2000)  # or any threshold you define
 
         return info_key(role, phase, needed, qty_cmp, price_cmp, low_cash)    
     

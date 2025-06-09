@@ -13,7 +13,6 @@ import numpy as np
 from negmas import SAOResponse, ResponseType, Outcome, SAOState
 from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
-from scml.oneshot.agents import GreedySyncAgent, RandDistOneShotAgent, EqualDistOneShotAgent, SyncRandomOneShotAgent
 
 ACCEPT = ("ACCEPT", None) 
 
@@ -70,7 +69,7 @@ def opponent_policy(kind: str, rnd: int, need: int,
     return q, p
 
 ARCHES  = ["hardheaded", "conceder", "random", "tft"]
-WEIGHTS = [0.25,  0.5, 0.125, 0.125]
+WEIGHTS = [0.25,  0.25, 0.25, 0.25]
 
 #  CFR trainer (tabular, two‑player zero‑sum)
 class CFRTrainer:
@@ -266,7 +265,7 @@ class CFROneShotAgent(OneShotAgent):
 
         
         #TODO: set low cash flag according to balance
-        low_cash = int(self.awi.current_balance < 5000)  # or any threshold you define
+        low_cash = int(self.awi.current_balance < 2000)  # or any threshold you define
 
         return info_key(role, phase, needed, qty_cmp, price_cmp, low_cash)    
     

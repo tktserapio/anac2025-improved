@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 from negmas import save_stats
 from scml.oneshot.world import SCML2024OneShotWorld
 from scml.oneshot.agents import SyncRandomOneShotAgent, GreedyOneShotAgent, RandDistOneShotAgent
+# from myagent_builtin_util import CFRAgent as builtin_util
+from myagent_newtrust import CFRAgentTrust as trust
+from myagent_builtin_util import CFRAgent as builtin
 from logging_cfra import LoggingCFRAgent   # ← our new class
 from MatchingPennies import MyAgent as mp
 import numpy as np
@@ -15,7 +18,8 @@ agent_types = [
     SyncRandomOneShotAgent,
     LoggingCFRAgent,      # ← use this now
     RandDistOneShotAgent,
-    mp
+    mp, 
+    builtin
 ]
 # Accumulators for aggregated shortfall_penalty stats and scores across runs
 aggregated_neg_lengths = {}  # accumulator for negotiation lengths
@@ -52,18 +56,19 @@ for run_idx in range(1):
                 if c > 0:
                     print(f"    rounds={r:2d}: {c}")
 
-    # Get world scores and filter CFR keys (unchanged)
+    # Get world scores and filter CFR and LCF keys
     world_agent_scores = world.scores()
     print("Scores:", world_agent_scores)
     cfr_keys = [agent for agent in world_agent_scores if "CFR" in agent]
+    lcf_keys = [agent for agent in world_agent_scores if "LCF" in agent]
 
+    # Process CFR agents
     for cfr in cfr_keys:
         # Filter out only the shortfall_penalty stats for this CFR agent
         shortfall_stats = {k: (v[0], v[-1])
-                           for k, v in world.stats.items()
-                           if cfr in k and "shortfall_penalty" in k}
-
-        # Accumulate the shortfall stats
+                        for k, v in world.stats.items()
+                        if cfr in k and "shortfall_penalty" in k}
+        # Accumulate the shortfall stats for CFR
         if cfr not in aggregated_shortfall:
             aggregated_shortfall[cfr] = {}
         for key, (first, last) in shortfall_stats.items():
@@ -72,10 +77,30 @@ for run_idx in range(1):
             aggregated_shortfall[cfr][key][0] += first
             aggregated_shortfall[cfr][key][1] += last
 
-        # Accumulate the score for this run
+        # Accumulate the score for this run for CFR
         if cfr not in aggregated_scores:
             aggregated_scores[cfr] = []
         aggregated_scores[cfr].append(world_agent_scores[cfr])
+
+    # Process LCF agents
+    for lcf in lcf_keys:
+        # Filter out only the shortfall_penalty stats for this LCF agent
+        shortfall_stats = {k: (v[0], v[-1])
+                        for k, v in world.stats.items()
+                        if lcf in k and "shortfall_penalty" in k}
+        # Accumulate the shortfall stats for LCF
+        if lcf not in aggregated_shortfall:
+            aggregated_shortfall[lcf] = {}
+        for key, (first, last) in shortfall_stats.items():
+            if key not in aggregated_shortfall[lcf]:
+                aggregated_shortfall[lcf][key] = [0, 0]
+            aggregated_shortfall[lcf][key][0] += first
+            aggregated_shortfall[lcf][key][1] += last
+
+        # Accumulate the score for this run for LCF
+        if lcf not in aggregated_scores:
+            aggregated_scores[lcf] = []
+        aggregated_scores[lcf].append(world_agent_scores[lcf])
 
 # After running all iterations, print the aggregated negotiation lengths alongside scores and shortfall stats
 print("\nAggregated Negotiation Length Stats over 5 runs:")

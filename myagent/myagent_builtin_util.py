@@ -19,7 +19,7 @@ from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
 # from MatchingPennies import MyAgent as mp
 
-class CFRAgent(cfr_acceptinc_util):
+class CFRAgent(cfr_builtin_util):
     """
     This is the only class you *need* to implement. The current skeleton simply loads a single model
     that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
@@ -34,6 +34,18 @@ class CFRAgent(cfr_acceptinc_util):
         self._daily_reset()
 
     def before_step(self):
+
+        price_min = self.awi.current_input_issues[UNIT_PRICE].min_value
+        price_max = self.awi.current_input_issues[UNIT_PRICE].max_value
+        mu_price  = (price_min + price_max) / 2
+
+        mu_prod_c  = self.ufun.production_cost
+        mu_disp_c  = self.ufun.disposal_cost
+        mu_store_c = self.ufun.storage_cost
+        mu_short   = self.ufun.shortfall_penalty
+
+        n_partners = len(self.awi.my_consumers) if self.awi.my_consumers else len(self.awi.my_suppliers)
+
         super().before_step()
         self._daily_reset()
 
@@ -66,7 +78,6 @@ class CFRAgent(cfr_acceptinc_util):
 
         I = self._infoset(role, state, need)
         idx, (q, price) = self._sample_action(I, role, need)
-        print(f"Price offer: {price}")
         q = min(max(1, q), need)
 
         self.outstanding[negotiator_id] += q
@@ -118,7 +129,6 @@ class CFRAgent(cfr_acceptinc_util):
 
         # ───────────────── 4) otherwise counter with CFR offer ──
         q, price = action                      # action unpack
-        print(f"Price counter-offer: {price}")
         q = min(max(1, q), needed)             # clamp to remaining need
         return SAOResponse(
             ResponseType.REJECT_OFFER,

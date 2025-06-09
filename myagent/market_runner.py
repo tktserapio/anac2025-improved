@@ -22,7 +22,7 @@ aggregated_neg_lengths = {}  # accumulator for negotiation lengths
 aggregated_shortfall = {}
 aggregated_scores = {}
 
-for run_idx in range(5):
+for run_idx in range(1):
     world = SCML2024OneShotWorld(
         **SCML2024OneShotWorld.generate(
             agent_types=agent_types,

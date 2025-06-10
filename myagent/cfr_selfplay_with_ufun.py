@@ -20,7 +20,6 @@ from scml.oneshot import ANACOneShotContext
 from negmas import SAOResponse, ResponseType, Outcome, SAOState
 from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
-from scml.oneshot.agents import OneshotDoNothingAgent
 
 from scml.oneshot.world import SCML2024OneShotWorld
 from scml.oneshot import OneShotUFun
@@ -65,9 +64,9 @@ class CFRTrainer:
         self.nprng  = np.random.RandomState(1)
 
         # cost parameters (same scale as ±1 price band)
-        self.C_PROD   = 0.0
-        self.C_SHORT  = 10.0
-        self.C_DISP   = 10.0
+        self.C_PROD   = 3
+        self.C_SHORT  = 0.6
+        self.C_DISP   = 0.08
         self.C_STORE  = 0.0
 
     # =============================================================
@@ -77,6 +76,8 @@ class CFRTrainer:
               save_every=0,
               out_pattern="cfr_iter_{:06d}.json"):
         for t in range(1, iters + 1):
+            if t % 10000 == 0:
+                print(f"{t} iterations.")
             self._traverse("B")
             self._traverse("S")
             if save_every and t % save_every == 0:
@@ -101,14 +102,18 @@ class CFRTrainer:
     # ------------------------------------------------------------
     def _traverse(self, to_update: str):
         need = self.rng.randint(1, self.max_q)
+        level          = self.rng.choice([1, 2])     
+        input_product  = level - 1    
+        is_input_side  = (to_update == "B")
 
         # --------- create lightweight OneShotUFun -----------------
         n_partners = 1                       # one negotiator per side
+
         ufun = OneShotUFun(
             ex_pin=0, ex_qin=0, ex_pout=0, ex_qout=0,
-            input_product=0,
-            input_agent=(to_update == "B"),
-            output_agent=(to_update == "S"),
+            input_product=input_product,
+            input_agent=is_input_side,
+            output_agent= not is_input_side,
             production_cost=self.C_PROD,
             disposal_cost=self.C_DISP,
             storage_cost=self.C_STORE,
@@ -121,10 +126,10 @@ class CFRTrainer:
             current_step=0,
             agent_id=None,
             time_range=(0, 0),
-            input_qrange=(0, self.max_q),
+            input_qrange=(1, self.max_q),
             input_prange=(-1, 1),
-            output_qrange=(0, self.max_q),
-            output_prange=(-1, 1),
+            output_qrange=(1, 10),
+            output_prange = (-1, 1),
             force_exogenous=True,
             n_lines=self.max_q,
             normalized=False,

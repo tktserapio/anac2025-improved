@@ -10,9 +10,9 @@ import pickle
 import torch
 # from cfr_oneshot_agent import CFROneShotAgent
 # from cfr_oneshot_agent_acceptinc import CFROneShotAgent as cfr_acceptinc
-from cfr_oneshot_agent_acceptinc_util import CFROneShotAgent as cfr_acceptinc_util
 # from cfr_builtin_util import CFROneShotAgent as cfr_builtin_util
-from cfr_selfplay import CFROneShotAgent as cfr_selfplay
+# from cfr_selfplay import CFROneShotAgent as cfr_selfplay
+from cfr_selfplay_with_ufun import CFROneShotAgent as cfr_selfplay_with_ufun
 from collections import defaultdict
 
 from negmas import SAOResponse, ResponseType, Outcome, SAOState
@@ -20,7 +20,7 @@ from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
 # from MatchingPennies import MyAgent as mp
 
-class CFRAgentMain(cfr_selfplay):
+class CFRAgentMain(cfr_selfplay_with_ufun):
     """
     This is the only class you *need* to implement. The current skeleton simply loads a single model
     that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
@@ -80,6 +80,20 @@ class CFRAgentMain(cfr_selfplay):
         state,
         source: str = ""
     ) -> ResponseType | SAOResponse:
+        # print(
+        #     f"ex_pin: {self.ufun.ex_pin}, ex_qin: {self.ufun.ex_qin}, "
+        #     f"ex_pout: {self.ufun.ex_pout}, ex_qout: {self.ufun.ex_qout}, "
+        #     f"input_product: {self.ufun.input_product}, input_agent: {self.ufun.input_agent}, "
+        #     f"output_agent: {self.ufun.output_agent}, production_cost: {self.ufun.production_cost}, "
+        #     f"disposal_cost: {self.ufun.disposal_cost}, storage_cost: {self.ufun.storage_cost}, "
+        #     f"shortfall_penalty: {self.ufun.shortfall_penalty}, "
+        #     f"n_input_negs: {self.ufun.n_input_negs}, n_output_negs: {self.ufun.n_output_negs}, "
+        #     f"current_step: {self.ufun.current_step}, agent_id: {self.ufun.agent_id}, "
+        #     f"time_range: {self.ufun.time_range}, input_qrange: {self.ufun.input_qrange}, "
+        #     f"input_prange: {self.ufun.input_prange}, output_qrange: {self.ufun.output_qrange}, "
+        #     f"output_prange: {self.ufun.output_prange}, force_exogenous: {self.ufun.force_exogenous}, "
+        #     f"n_lines: {self.ufun.n_lines}, normalized: {self.ufun.normalized}"
+        # )
         offer = state.current_offer
         if offer is None:
             return ResponseType.REJECT_OFFER
@@ -108,7 +122,7 @@ class CFRAgentMain(cfr_selfplay):
         if not price_ok and role=="B":
             # if we really need the supply but partner is low‐trust,
             # be *more* reluctant to accept from them
-            threshold = self.trust[partner_id]
+            threshold = self.trust[negotiator_id]
             if random.random() > threshold:
                 return ResponseType.REJECT_OFFER
         
@@ -157,4 +171,4 @@ if __name__ == "__main__":
     import sys
     from helpers.runner import run
 
-    run([CFRAgent], sys.argv[1] if len(sys.argv) > 1 else "oneshot")
+    run([CFRAgentMain], sys.argv[1] if len(sys.argv) > 1 else "oneshot")

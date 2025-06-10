@@ -8,9 +8,8 @@ from negmas import save_stats
 from scml.oneshot.world import SCML2024OneShotWorld
 from scml.oneshot.agents import SyncRandomOneShotAgent, GreedyOneShotAgent, RandDistOneShotAgent
 # from myagent_builtin_util import CFRAgent as builtin_util
-from myagent_newtrust import CFRAgentTrust as trust
 from myagent_builtin_util import CFRAgent as builtin
-from logging_cfra import LoggingCFRAgent   # ← our new class
+from logging_cfra import LoggingCFRAgent # this uses the main agent
 from MatchingPennies import MyAgent as mp
 import numpy as np
 

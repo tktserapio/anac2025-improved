@@ -320,8 +320,6 @@ class CFROneShotAgent(OneShotAgent):
         # assume three concurrent negs on your side:
         n_partners = 3
 
-        print(mu_price, mu_prod_c, mu_disp_c, mu_store_c, mu_short)
-
         # seeding 
         random.seed(hash(self.id) & 0xFFFF)
         np.random.seed(hash(self.id) & 0xFFFF)

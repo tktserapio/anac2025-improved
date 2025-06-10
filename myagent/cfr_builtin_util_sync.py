@@ -280,15 +280,8 @@ class CFRTrainer:
         pos = np.maximum(r, 0.0)
         return pos/pos.sum() if pos.sum() else np.full(self.nA, 1/self.nA)
 
-class CFROneShotAgent(OneShotAgent):
+class CFROneShotAgent(OneShotSyncAgent):
     """Agent that negotiates using a pre‑trained CFR policy."""
-
-    def _mismatch_after(self, partner_id: str, qty: int, role: str) -> int:
-        """Projected absolute mismatch if we add `qty` to this partner."""
-        # remaining need after counting all outstanding offers
-        need_buy  = max(0, self.rem_buy  - (qty if role=="B" else 0))
-        need_sell = max(0, self.rem_sell - (qty if role=="S" else 0))
-        return abs(need_buy - need_sell)         # >0 means disposal or short-fall
 
     def init(self):
         policy_path = pathlib.Path(__file__).with_name("cfr_builtin_utilv2.policy.json")

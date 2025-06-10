@@ -7,7 +7,15 @@ This code is free to use or update given that proper attribution is given to
 the authors and the ANAC 2024 SCML competition.
 """
 import pickle
-import torch
+import json
+import math
+import pathlib
+import random
+import argparse
+from collections import defaultdict
+from typing import Dict, List, Tuple
+
+import numpy as np
 # from cfr_oneshot_agent import CFROneShotAgent
 # from cfr_oneshot_agent_acceptinc import CFROneShotAgent as cfr_acceptinc
 # from cfr_oneshot_agent_acceptinc_util import CFROneShotAgent as cfr_acceptinc_util
@@ -27,7 +35,7 @@ class CFRAgentMain(cfr_builtin_util):
     that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
     """
 
-    _tau   = 0.4     # learning rate for trust EMA
+    _tau   = 0.3     # learning rate for trust EMA
     _floor = 0.1     # never drive trust to zero
 
     def _assess_offer_quality(self, offer, role: str, needed: int) -> float:
@@ -42,51 +50,68 @@ class CFRAgentMain(cfr_builtin_util):
         else:                                # seller prefers higher prices
             price_score = (offer[UNIT_PRICE] - self.price_min) / price_range
         price_score = min(max(price_score, 0.0), 1.0)
-        return 0.5 * (quantity_score + price_score)
+        return 0.9*quantity_score + 0.1*price_score
 
     def init(self):
         super().init()
         self.trust = defaultdict(lambda: 0.5)
         self._daily_reset()
-
-    def before_step(self):
-        super().before_step()
-        self._daily_reset()
+        print(f"Total need: {self.awi.needed_supplies}, {self.awi.needed_sales}")
 
     def _daily_reset(self):
         self.rem_buy  = self.awi.needed_supplies
         self.rem_sell = self.awi.needed_sales
         self.outstanding = defaultdict(int)   # partner -> qty proposed today
 
+    def before_step(self):
+        super().before_step()
+        self._daily_reset()
+
     def _quota(self, partner_id: str, role: str) -> int:
         """Allocate portion of remaining need proportional to trust."""
         partner_ids = (self.awi.my_suppliers if role=="B" else self.awi.my_consumers)
         weights = [max(self.trust[p], self._floor) for p in partner_ids]
-        total_w = sum(weights)
+        
+        need = max(0, need - self.outstanding[partner_id])
+        if need == 0:
+            return 0
+
+        total_w = sum(weights)  
         if total_w == 0:                      # shouldn’t happen
             total_w = len(partner_ids)*self._floor
         my_w   = max(self.trust[partner_id], self._floor)
         need   = self.rem_buy if role=="B" else self.rem_sell
+        need -= self.outstanding[partner_id]
+
         return max(1, int(round(need * my_w / total_w)))
 
-    # PROPOSE WITH NEW TRAINING
+    def _needed(self, n_id: str | None) -> int:
+        base = (self.awi.needed_supplies
+            if n_id in self.awi.my_suppliers
+            else self.awi.needed_sales)
+        # Subtract offers we already put on the table
+        return max(0, base - self.outstanding[n_id])
+
     def propose(self, negotiator_id, state):
-        role   = self._role(negotiator_id)
+        super().propose()
         
-        need   = self._needed(negotiator_id) - self.outstanding[negotiator_id]
-        if need <= 0:
-            return None
-
-        offer_cap = self._quota(negotiator_id, role)
-        need      = min(need, offer_cap)
-
-        I = self._infoset(role, state, need)
-        idx, (q, price) = self._sample_action(I, role, need)
-        q = min(max(1, q), need)
-
-        self.outstanding[negotiator_id] += q
+        # role   = self._role(negotiator_id)
         
-        return (q, self.awi.current_step, price)
+        # need   = self._needed(negotiator_id) - self.outstanding[negotiator_id]
+        # if need <= 0:
+        #     return None
+
+        # offer_cap = self._quota(negotiator_id, role)
+        # print("Am I reached?")
+        # need      = min(need, offer_cap)
+
+        # I = self._infoset(role, state, need)
+        # idx, (q, price) = self._sample_action(I, role, need)
+        # q = min(max(1, q), need)
+
+        # self.outstanding[negotiator_id] += q
+        
+        # return (q, self.awi.current_step, price)
 
     # RESPOND WITH NEW TRAINING (includes ACCEPT in CFR):
     def respond(
@@ -127,8 +152,6 @@ class CFRAgentMain(cfr_builtin_util):
             # be *more* reluctant to accept from them
             threshold = self.trust[negotiator_id]
             if random.random() > threshold:
-                quality = self._assess_offer_quality(offer, role, needed)
-                self._update_trust(negotiator_id, quality)
                 return ResponseType.REJECT_OFFER
         
         if offer[QUANTITY] <= needed and price_ok:
@@ -146,20 +169,38 @@ class CFRAgentMain(cfr_builtin_util):
             (q, self.awi.current_step, price)
         )
 
+    def _sample_action(self, infoset: str, role: str, need : int):
+        pmf = self.policy.get(infoset) # this gets a distribution we can sample an action from
+        if pmf is None: # if there is no policy, we fall back
+            if role == "B":                          # we are BUYER (need inputs)
+                q   = max(1, need)                   # ask for the full remaining need
+                p   = self.price_max                 # be willing to pay the max band price
+            else:                                    # we are SELLER
+                q   = max(1, need)
+                p   = self.price_min                 # entice consumers with lowest price
+            fallback_idx = len(self.action_set) - 1
+            return fallback_idx, (q,p)
+        idx = np.random.choice(len(self.action_set), p=pmf) #sample from distribution
+        return idx, self.action_set[idx]
+
+    def _role(self, partner_id: str) -> str:
+        #is [partner_id] a seller or a buyer?
+        return "S" if partner_id in self.awi.my_consumers else "B"
+
     def _update_trust(self, pid: str, reward: float):
         """EMA update: τ·reward  +  (1−τ)·old"""
         self.trust[pid] = (1 - self._tau) * self.trust[pid] + self._tau * reward
 
     def on_negotiation_success(self, contract, mechanism):
         partner = next(p for p in contract.partners if p != self.id)
+        q = contract.agreement["quantity"]
+        if partner in self.awi.my_suppliers:
+            self.rem_buy  = max(0, self.rem_buy  - q)
+        else:
+            self.rem_sell = max(0, self.rem_sell - q)
+        self.outstanding[partner] = 0
         # reward = 1.0 because we got a contract
         self._update_trust(partner, 1.0)
-        self.outstanding[partner] = 0
-
-        if partner in self.awi.my_suppliers:
-            self.rem_buy = max(0, self.rem_buy - contract.agreement["quantity"])
-        else:
-            self.rem_sell = max(0, self.rem_sell - contract.agreement["quantity"])
 
     def on_negotiation_failure(self,
                                partners,        # list of IDs
@@ -175,7 +216,6 @@ class CFRAgentMain(cfr_builtin_util):
                 continue
             self._update_trust(pid, 0.0)
             self.outstanding[pid] = 0
-
 
 if __name__ == "__main__":
     import sys

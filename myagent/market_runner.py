@@ -6,155 +6,83 @@ import matplotlib.pyplot as plt
 
 from negmas import save_stats
 from scml.oneshot.world import SCML2024OneShotWorld
-from scml.oneshot.agents import SyncRandomOneShotAgent, GreedyOneShotAgent, RandDistOneShotAgent
-# from myagent_builtin_util import CFRAgent as builtin_util
-from logging_cfra import LoggingCFRAgent # this uses the main agent
+from scml.oneshot.agents import (
+    SyncRandomOneShotAgent,
+    GreedyOneShotAgent,
+    RandDistOneShotAgent,
+)
+from logging_cfra import LoggingCFRAgent
 from MatchingPennies import MyAgent as mp
+
 import numpy as np
 
 agent_types = [
     SyncRandomOneShotAgent,
-    LoggingCFRAgent,      # ← use this now
+    LoggingCFRAgent,
     RandDistOneShotAgent,
-    mp, 
+    mp,
 ]
-# Accumulators for aggregated shortfall_penalty stats and scores across runs
-aggregated_neg_lengths = {}  # accumulator for negotiation lengths
-aggregated_shortfall = {}
-aggregated_scores = {}
 
-for run_idx in range(10):
-    world = SCML2024OneShotWorld(
-        **SCML2024OneShotWorld.generate(
-            agent_types=agent_types,
-            n_steps=50
-        ),
-        construct_graphs=True,
-    )
+n_runs  = 10
+n_steps = 50  # must match the `n_steps` you generate
 
+# Accumulators
+aggregated_neg_lengths    = {}
+aggregated_shortfall_days = {}
+aggregated_disposal_days  = {}
+aggregated_scores         = {}
+
+for run_idx in range(2):
+    # build & run the world
+    config = SCML2024OneShotWorld.generate(agent_types=agent_types, n_steps=n_steps)
+    world  = SCML2024OneShotWorld(**config, construct_graphs=True)
     world.run()
     world.plot_stats(pertype=True)
 
-    # accumulate negotiation‐length stats
+    # 1) negotiation‐length logging (unchanged)
     for aid, agent in world.agents.items():
         if hasattr(agent, "neg_lengths"):
-            # compute histogram: note that index 0 is skipped
-            neg_hist = np.bincount(agent.neg_lengths, minlength=21)[1:]
-            if aid not in aggregated_neg_lengths:
-                aggregated_neg_lengths[aid] = neg_hist.copy()
-            else:
-                aggregated_neg_lengths[aid] += neg_hist
+            hist = np.bincount(agent.neg_lengths, minlength=21)[1:]
+            aggregated_neg_lengths.setdefault(aid, np.zeros_like(hist)).__iadd__(hist)
 
-            # print per-run negotiation lengths (optional)
-            print(f"\n── {aid} ──")
-            print(f"  {len(agent.neg_lengths)} negotiations recorded")
-            print("  lengths histogram:")
-            for r, c in enumerate(neg_hist, 1):
-                if c > 0:
-                    print(f"    rounds={r:2d}: {c}")
+    # 2) score logging
+    scores = world.scores()
+    for aid, sc in scores.items():
+        aggregated_scores.setdefault(aid, []).append(sc)
 
-    # Get world scores and filter CFR and LCF keys
-    world_agent_scores = world.scores()
-    print("Scores:", world_agent_scores)
-    cfr_keys = [agent for agent in world_agent_scores if "CFR" in agent]
-    lcf_keys = [agent for agent in world_agent_scores if "LCF" in agent]
+    # 3) shortfall/disposal logging
+    # world.stats is a dict: stat_name → list of length n_steps
+    for aid in scores.keys():
+        # count days with shortfall > 0
+        sf_keys = [k for k in world.stats if "shortfall_penalty" in k and aid in k]
+        sf_days = sum(
+            1
+            for k in sf_keys
+            for val in world.stats[k]
+            if val > 0
+        )
+        aggregated_shortfall_days[aid] = aggregated_shortfall_days.get(aid, 0) + sf_days
 
-    # Process CFR agents
-    for cfr in cfr_keys:
-        # Filter out only the shortfall_penalty stats for this CFR agent
-        shortfall_stats = {k: (v[0], v[-1])
-                        for k, v in world.stats.items()
-                        if cfr in k and "shortfall_penalty" in k}
-        # Accumulate the shortfall stats for CFR
-        if cfr not in aggregated_shortfall:
-            aggregated_shortfall[cfr] = {}
-        for key, (first, last) in shortfall_stats.items():
-            if key not in aggregated_shortfall[cfr]:
-                aggregated_shortfall[cfr][key] = [0, 0]
-            aggregated_shortfall[cfr][key][0] += first
-            aggregated_shortfall[cfr][key][1] += last
+        # count days with disposal > 0
+        dp_keys = [k for k in world.stats if "disposal_cost" in k and aid in k]
+        dp_days = sum(
+            1
+            for k in dp_keys
+            for val in world.stats[k]
+            if val > 0
+        )
+        aggregated_disposal_days[aid] = aggregated_disposal_days.get(aid, 0) + dp_days
 
-        # Accumulate the score for this run for CFR
-        if cfr not in aggregated_scores:
-            aggregated_scores[cfr] = []
-        aggregated_scores[cfr].append(world_agent_scores[cfr])
+# === After all runs: print summary ===
+total_days = n_runs * n_steps
 
-    # Process LCF agents
-    for lcf in lcf_keys:
-        # Filter out only the shortfall_penalty stats for this LCF agent
-        shortfall_stats = {k: (v[0], v[-1])
-                        for k, v in world.stats.items()
-                        if lcf in k and "shortfall_penalty" in k}
-        # Accumulate the shortfall stats for LCF
-        if lcf not in aggregated_shortfall:
-            aggregated_shortfall[lcf] = {}
-        for key, (first, last) in shortfall_stats.items():
-            if key not in aggregated_shortfall[lcf]:
-                aggregated_shortfall[lcf][key] = [0, 0]
-            aggregated_shortfall[lcf][key][0] += first
-            aggregated_shortfall[lcf][key][1] += last
-
-        # Accumulate the score for this run for LCF
-        if lcf not in aggregated_scores:
-            aggregated_scores[lcf] = []
-        aggregated_scores[lcf].append(world_agent_scores[lcf])
-
-# After running all iterations, print the aggregated negotiation lengths alongside scores and shortfall stats
-print("\nAggregated Negotiation Length Stats over 5 runs:")
-for aid, hist in aggregated_neg_lengths.items():
+print(f"\n=== Shortfall vs Disposal over {n_runs} runs ({total_days} days each) ===\n")
+for aid in aggregated_scores.keys():
+    sf = aggregated_shortfall_days.get(aid, 0)
+    dp = aggregated_disposal_days.get(aid, 0)
+    score_list = aggregated_scores[aid]
+    avg_score   = np.mean(score_list)
     print(f"{aid}:")
-    for r, count in enumerate(hist, 1):
-        if count > 0:
-            print(f"  rounds={r:2d}: {count}")
-
-print("\nAggregated Shortfall Penalty Stats over 5 runs:")
-for cfr, stats in aggregated_shortfall.items():
-    print(f"{cfr}:")
-    for stat_key, (sum_first, sum_last) in stats.items():
-        print(f"  {stat_key}: (sum_first={sum_first}, sum_last={sum_last})")
-    print(f"  Scores over runs: {aggregated_scores.get(cfr, [])}")
-
-# #!/usr/bin/env python3
-# # run_with_logging.py
-
-# import os
-# import pandas as pd
-# from pathlib import Path
-# import matplotlib.pyplot as plt
-
-# from negmas import save_stats
-# from scml.oneshot.world import SCML2024OneShotWorld
-# from scml.oneshot.agents import SyncRandomOneShotAgent, GreedyOneShotAgent, RandDistOneShotAgent
-# from myagent import CFRAgent
-# from logging_cfra import LoggingCFRAgent
-# from MatchingPennies import MyAgent as mp
-# import numpy as np
-
-# agent_types = [
-#     SyncRandomOneShotAgent,
-#     CFRAgent,
-#     RandDistOneShotAgent,
-#     mp
-# ]
-
-# for i in range(1):
-#     world = SCML2024OneShotWorld(
-#         **SCML2024OneShotWorld.generate(
-#             agent_types=agent_types, n_steps=50
-#         ),
-#         construct_graphs=True,
-#     )
-
-#     world.run()
-#     world.plot_stats(pertype=True)
-#     world_agent_scores = world.scores()
-
-#     cfr_keys = [agent for agent in world_agent_scores if "CFR" in agent]
-#     print("CFR Agent Keys:", cfr_keys)
-#     for cfr in cfr_keys:
-#         disposal_stats =  {k: (v[0], v[-1]) for k, v in world.stats.items() if ("CFR" in k) and ("@0" in k) and "disposal_cost" in k}
-#         shortfall_p_stats = {k: (v[0], v[-1]) for k, v in world.stats.items() if ("CFR" in k) and ("@1" in k) and "shortfall_penalty" in k}
-#         shortfall_q_stats = {k: (v[0], v[-1]) for k, v in world.stats.items() if ("CFR" in k) and ("@1" in k) and "shortfall_quantity" in k}
-#         production_costs = {k: (v[0], v[-1]) for k, v in world.stats.items() if "CFR" in k and "production_costs" in k}
-#         score = world_agent_scores.get(cfr, None)
-#         print(f"{cfr}: score = {score}, disposal_cost = {disposal_stats}, shortfall_penalty = {shortfall_p_stats}, production_costs = {production_costs}")
+    print(f"  • avg score       = {avg_score:.3f}  (runs={len(score_list)})")
+    print(f"  • shortfall days  = {sf}/{total_days} ({100*sf/total_days:.1f}%)")
+    print(f"  • disposal days   = {dp}/{total_days} ({100*dp/total_days:.1f}%)\n")

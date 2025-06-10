@@ -10,7 +10,8 @@ import pickle
 import torch
 # from cfr_oneshot_agent import CFROneShotAgent
 # from cfr_oneshot_agent_acceptinc import CFROneShotAgent as cfr_acceptinc
-# from cfr_builtin_util import CFROneShotAgent as cfr_builtin_util
+# from cfr_oneshot_agent_acceptinc_util import CFROneShotAgent as cfr_acceptinc_util
+from cfr_builtin_util import CFROneShotAgent as cfr_builtin_util
 # from cfr_selfplay import CFROneShotAgent as cfr_selfplay
 from cfr_selfplay_with_ufun import CFROneShotAgent as cfr_selfplay_with_ufun
 from collections import defaultdict
@@ -20,14 +21,28 @@ from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot.agent import OneShotAgent
 # from MatchingPennies import MyAgent as mp
 
-class CFRAgentMain(cfr_selfplay_with_ufun):
+class CFRAgentMain(cfr_builtin_util):
     """
     This is the only class you *need* to implement. The current skeleton simply loads a single model
     that is supposed to be saved in MODEL_PATH (train.py can be used to train such a model).
     """
 
-    _tau   = 0.5     # learning rate for trust EMA
+    _tau   = 0.4     # learning rate for trust EMA
     _floor = 0.1     # never drive trust to zero
+
+    def _assess_offer_quality(self, offer, role: str, needed: int) -> float:
+        """Rate offer quality from 0 (terrible) to 1 (excellent)"""
+        if needed <= 0 or offer is None:
+            return 0.0
+        quantity_score = min(1.0, offer[QUANTITY] / needed)
+
+        price_range = max(1, self.price_max - self.price_min)
+        if role == "B":                      # buyer prefers lower prices
+            price_score = 1.0 - ((offer[UNIT_PRICE] - self.price_min) / price_range)
+        else:                                # seller prefers higher prices
+            price_score = (offer[UNIT_PRICE] - self.price_min) / price_range
+        price_score = min(max(price_score, 0.0), 1.0)
+        return 0.5 * (quantity_score + price_score)
 
     def init(self):
         super().init()
@@ -80,20 +95,6 @@ class CFRAgentMain(cfr_selfplay_with_ufun):
         state,
         source: str = ""
     ) -> ResponseType | SAOResponse:
-        # print(
-        #     f"ex_pin: {self.ufun.ex_pin}, ex_qin: {self.ufun.ex_qin}, "
-        #     f"ex_pout: {self.ufun.ex_pout}, ex_qout: {self.ufun.ex_qout}, "
-        #     f"input_product: {self.ufun.input_product}, input_agent: {self.ufun.input_agent}, "
-        #     f"output_agent: {self.ufun.output_agent}, production_cost: {self.ufun.production_cost}, "
-        #     f"disposal_cost: {self.ufun.disposal_cost}, storage_cost: {self.ufun.storage_cost}, "
-        #     f"shortfall_penalty: {self.ufun.shortfall_penalty}, "
-        #     f"n_input_negs: {self.ufun.n_input_negs}, n_output_negs: {self.ufun.n_output_negs}, "
-        #     f"current_step: {self.ufun.current_step}, agent_id: {self.ufun.agent_id}, "
-        #     f"time_range: {self.ufun.time_range}, input_qrange: {self.ufun.input_qrange}, "
-        #     f"input_prange: {self.ufun.input_prange}, output_qrange: {self.ufun.output_qrange}, "
-        #     f"output_prange: {self.ufun.output_prange}, force_exogenous: {self.ufun.force_exogenous}, "
-        #     f"n_lines: {self.ufun.n_lines}, normalized: {self.ufun.normalized}"
-        # )
         offer = state.current_offer
         if offer is None:
             return ResponseType.REJECT_OFFER
@@ -112,6 +113,8 @@ class CFRAgentMain(cfr_selfplay_with_ufun):
         #   • action is (q, price) for idx > 0
         # ───────────────── 2) obey policy if it says ACCEPT ─────
         if idx == 0 and offer[QUANTITY] <= needed:
+            quality = self._assess_offer_quality(offer, role, needed)
+            self._update_trust(negotiator_id, quality)
             return ResponseType.ACCEPT_OFFER
 
         # ───────────────── 3) quick pragmatic accept fallback ───
@@ -124,26 +127,33 @@ class CFRAgentMain(cfr_selfplay_with_ufun):
             # be *more* reluctant to accept from them
             threshold = self.trust[negotiator_id]
             if random.random() > threshold:
+                quality = self._assess_offer_quality(offer, role, needed)
+                self._update_trust(negotiator_id, quality)
                 return ResponseType.REJECT_OFFER
         
         if offer[QUANTITY] <= needed and price_ok:
+            quality = self._assess_offer_quality(offer, role, needed)
+            self._update_trust(negotiator_id, quality)
             return ResponseType.ACCEPT_OFFER
 
         # ───────────────── 4) otherwise counter with CFR offer ──
         q, price = action                      # action unpack
         q = min(max(1, q), needed)             # clamp to remaining need
+        quality = self._assess_offer_quality(offer, role, needed)
+        self._update_trust(negotiator_id, quality)
         return SAOResponse(
             ResponseType.REJECT_OFFER,
             (q, self.awi.current_step, price)
         )
 
-    def _update_trust(self, pid: str, accepted: bool):
-        prev = self.trust[pid]
-        self.trust[pid] = (1 - self._tau) * prev + self._tau * (1.0 if accepted else 0.0)
+    def _update_trust(self, pid: str, reward: float):
+        """EMA update: τ·reward  +  (1−τ)·old"""
+        self.trust[pid] = (1 - self._tau) * self.trust[pid] + self._tau * reward
 
     def on_negotiation_success(self, contract, mechanism):
         partner = next(p for p in contract.partners if p != self.id)
-        self._update_trust(partner, accepted=True)
+        # reward = 1.0 because we got a contract
+        self._update_trust(partner, 1.0)
         self.outstanding[partner] = 0
 
         if partner in self.awi.my_suppliers:
@@ -163,7 +173,7 @@ class CFRAgentMain(cfr_selfplay_with_ufun):
         for pid in partners:
             if pid == self.id:
                 continue
-            self._update_trust(pid, accepted=False)
+            self._update_trust(pid, 0.0)
             self.outstanding[pid] = 0
 
 
@@ -172,3 +182,19 @@ if __name__ == "__main__":
     from helpers.runner import run
 
     run([CFRAgentMain], sys.argv[1] if len(sys.argv) > 1 else "oneshot")
+
+
+# print(
+        #     f"ex_pin: {self.ufun.ex_pin}, ex_qin: {self.ufun.ex_qin}, "
+        #     f"ex_pout: {self.ufun.ex_pout}, ex_qout: {self.ufun.ex_qout}, "
+        #     f"input_product: {self.ufun.input_product}, input_agent: {self.ufun.input_agent}, "
+        #     f"output_agent: {self.ufun.output_agent}, production_cost: {self.ufun.production_cost}, "
+        #     f"disposal_cost: {self.ufun.disposal_cost}, storage_cost: {self.ufun.storage_cost}, "
+        #     f"shortfall_penalty: {self.ufun.shortfall_penalty}, "
+        #     f"n_input_negs: {self.ufun.n_input_negs}, n_output_negs: {self.ufun.n_output_negs}, "
+        #     f"current_step: {self.ufun.current_step}, agent_id: {self.ufun.agent_id}, "
+        #     f"time_range: {self.ufun.time_range}, input_qrange: {self.ufun.input_qrange}, "
+        #     f"input_prange: {self.ufun.input_prange}, output_qrange: {self.ufun.output_qrange}, "
+        #     f"output_prange: {self.ufun.output_prange}, force_exogenous: {self.ufun.force_exogenous}, "
+        #     f"n_lines: {self.ufun.n_lines}, normalized: {self.ufun.normalized}"
+        # )

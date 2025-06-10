@@ -244,10 +244,9 @@ class CFROneShotAgent(OneShotAgent):
             phase = 2  # mid
         else:
             phase = 3  # late
-
         
         #TODO: set low cash flag according to balance
-        low_cash = int(self.awi.current_balance < 2000)  # or any threshold you define
+        low_cash = int(self.awi.current_balance < 1000)  # or any threshold you define
 
         return info_key(role, phase, needed, qty_cmp, price_cmp, low_cash)    
     

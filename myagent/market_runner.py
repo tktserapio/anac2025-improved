@@ -8,7 +8,6 @@ from negmas import save_stats
 from scml.oneshot.world import SCML2024OneShotWorld
 from scml.oneshot.agents import SyncRandomOneShotAgent, GreedyOneShotAgent, RandDistOneShotAgent
 # from myagent_builtin_util import CFRAgent as builtin_util
-from myagent_builtin_util import CFRAgent as builtin
 from logging_cfra import LoggingCFRAgent # this uses the main agent
 from MatchingPennies import MyAgent as mp
 import numpy as np
@@ -18,14 +17,13 @@ agent_types = [
     LoggingCFRAgent,      # ← use this now
     RandDistOneShotAgent,
     mp, 
-    builtin
 ]
 # Accumulators for aggregated shortfall_penalty stats and scores across runs
 aggregated_neg_lengths = {}  # accumulator for negotiation lengths
 aggregated_shortfall = {}
 aggregated_scores = {}
 
-for run_idx in range(1):
+for run_idx in range(10):
     world = SCML2024OneShotWorld(
         **SCML2024OneShotWorld.generate(
             agent_types=agent_types,

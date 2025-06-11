@@ -22,7 +22,7 @@ import numpy as np
 from cfr_builtin_util import CFROneShotAgent as cfr_builtin_util
 from cfr_builtin_util_sync import CFROneShotAgent as cfr_builtin_util_sync
 # from cfr_selfplay import CFROneShotAgent as cfr_selfplay
-from cfr_selfplay_with_ufun import CFROneShotAgent as cfr_selfplay_with_ufun
+from myagent.old.cfr_selfplay_with_ufun import CFROneShotAgent as cfr_selfplay_with_ufun
 from collections import defaultdict
 
 from negmas import SAOResponse, ResponseType, Outcome, SAOState

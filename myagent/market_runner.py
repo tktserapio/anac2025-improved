@@ -3,6 +3,14 @@ import os
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
+# from scml_agents import get_agents
+
+# winners = [
+#     get_agents(y, track="oneshot", winners_only=True, as_class=True)[0]
+#     for y in (2021, 2022, 2023)
+# ]
+
+
 
 from negmas import save_stats
 from scml.oneshot.world import SCML2024OneShotWorld
@@ -10,17 +18,32 @@ from scml.oneshot.agents import (
     SyncRandomOneShotAgent,
     GreedyOneShotAgent,
     RandDistOneShotAgent,
+    EqualDistOneShotAgent,
+    #PatientAgent,
+    #GenerousAgent,
+    #AdaptiveAgent,
+    #Agent112,
+    #MySyncOneShotDoNothing,
 )
-from logging_cfra import LoggingCFRAgent
-from MatchingPennies import MyAgent as mp
+#from logging_cfra import LoggingCFRAgent
+from myagent.other_agents.MatchingPennies import MyAgent as mp
+from myagent import CFRAgentMain as myagent
 
 import numpy as np
 
 agent_types = [
     SyncRandomOneShotAgent,
-    LoggingCFRAgent,
+    GreedyOneShotAgent,
     RandDistOneShotAgent,
+    EqualDistOneShotAgent,
+    # BetterSyncAgent,
+    # PatientAgent,
+    # GenerousAgent,
+    # AdaptiveAgent,
+    # Agent112,
+    # MySyncOneShotDoNothing,
     mp,
+    myagent
 ]
 
 n_runs  = 10

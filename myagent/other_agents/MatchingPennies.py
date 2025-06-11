@@ -73,7 +73,7 @@ def distribute_goods(goods, capacities):
     return bins
 
 
-class MyAgent(OneShotSyncAgent):
+class MatchingPenniesAgent(OneShotSyncAgent):
     """
     This is the only class you *need* to implement. The current skeleton has a
     basic do-nothing implementation.
@@ -390,4 +390,4 @@ if __name__ == "__main__":
 
     from helpers.runner import run
 
-    run([MyAgent], sys.argv[1] if len(sys.argv) > 1 else "oneshot")
+    run([MatchingPenniesAgent], sys.argv[1] if len(sys.argv) > 1 else "oneshot")

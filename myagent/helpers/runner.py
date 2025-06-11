@@ -9,10 +9,20 @@ from scml.utils import (
     DefaultAgentsOneShot2024,
 )
 from tabulate import tabulate
+#from scml_agents import get_agents
+from other_agents.MatchingPennies import MatchingPenniesAgent as MatchingPenniesAgent
+from other_agents.QuantityOriented import QuantityOrientedAgent
+#from myagent.myagent import MATAgent
+
+init_competitors= [
+    MatchingPenniesAgent,
+    QuantityOrientedAgent,
+]
+
 
 
 def run(
-    competitors=tuple(),
+    competitors: list = None,
     competition="oneshot",
     reveal_types=True,
     n_steps=20,
@@ -45,18 +55,36 @@ def run(
 
     """
 
+
+
+    if competitors is None:
+        competitors = []
+
+    # Add your default init_competitors
+    from other_agents.MatchingPennies import MatchingPenniesAgent
+    from other_agents.QuantityOriented import QuantityOrientedAgent
+
+    init_competitors = [
+        MatchingPenniesAgent,
+        QuantityOrientedAgent,
+    ]
+
+    # Merge the user-provided competitors and built-ins
+    all_competitors = competitors + init_competitors
+
+
+
+
     if competition == "oneshot":
-        competitors = list(competitors) + list(DefaultAgentsOneShot2024)
+        all_competitors += list(DefaultAgentsOneShot2024)
+        runner = anac2024_oneshot
     else:
-        competitors = list(competitors) + list(DefaultAgentsStd2024)
+        all_competitors += list(DefaultAgentsStd2024)
+        runner = anac2024_std
 
     start = time.perf_counter()
-    if competition == "std":
-        runner = anac2024_std
-    else:
-        runner = anac2024_oneshot
     results = runner(
-        competitors=competitors,
+        competitors=all_competitors,
         verbose=True,
         n_steps=n_steps,
         n_configs=n_configs,
@@ -65,13 +93,18 @@ def run(
         agent_name_reveals_position=reveal_types,
         agent_name_reveals_type=reveal_types,
     )
+
+
+
     # just make names shorter
+    print("Columns in total_scores:", results.total_scores.columns.tolist())
     results.total_scores.agent_type = results.total_scores.agent_type.str.split(  # type: ignore
         "."
     ).str[-1]
     # display results
     print(tabulate(results.total_scores, headers="keys", tablefmt="psql"))  # type: ignore
     print(f"Finished in {humanize_time(time.perf_counter() - start)}")
+    print('num competitors: ',len(competitors))
 
 
 if __name__ == "__main__":

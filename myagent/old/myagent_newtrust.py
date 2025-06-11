@@ -11,7 +11,7 @@ import torch
 import random
 from typing import Callable, List
 # from cfr_oneshot_agent import CFROneShotAgent
-from cfr_oneshot_agent_acceptinc_util import CFROneShotAgent as cfr_acceptinc_util
+from myagent.old.cfr_oneshot_agent_acceptinc_util import CFROneShotAgent as cfr_acceptinc_util
 from cfr_builtin_util import CFROneShotAgent as cfr_builtin_util
 from collections import defaultdict
 

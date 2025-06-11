@@ -8,7 +8,7 @@ class LoggingCFRAgent(CFRAgent):
     Same as your CFRAgent, but records
     how many rounds each bilateral negotiation took.
     """
-
+    
     def init(self):
         super().init()
         # list of completed negotiation lengths

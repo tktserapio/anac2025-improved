@@ -14,7 +14,7 @@ from negmas import SAOResponse, ResponseType, Outcome, SAOState
 from scml.oneshot import QUANTITY, TIME, UNIT_PRICE, OneShotSyncAgent
 from scml.oneshot.agent import OneShotAgent
 from scml.oneshot.agents import GreedySyncAgent
-from MatchingPennies import MyAgent
+from myagent.other_agents.MatchingPennies import MyAgent
 from scml.oneshot.ufun import OneShotUFun
 
 # class SyncWrapper:

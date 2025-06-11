@@ -14,44 +14,30 @@ import random
 import argparse
 from collections import defaultdict
 from typing import Dict, List, Tuple
-
 import numpy as np
-# from cfr_oneshot_agent import CFROneShotAgent
-# from cfr_oneshot_agent_acceptinc import CFROneShotAgent as cfr_acceptinc
-# from cfr_oneshot_agent_acceptinc_util import CFROneShotAgent as cfr_acceptinc_util
-#from cfr_builtin_util import CFROneShotAgent as cfr_builtin_util
-# from cfr_selfplay import CFROneShotAgent as cfr_selfplay
-# from myagent.old.cfr_selfplay_with_ufun import CFROneShotAgent as cfr_selfplay_with_ufun
 from collections import defaultdict
-
 from negmas import SAOResponse, ResponseType, Outcome, SAOState, Contract
 from scml.oneshot import QUANTITY, TIME, UNIT_PRICE
 from scml.oneshot import OneShotAgent, OneShotSyncAgent, OneShotAWI
-# from MatchingPennies import MyAgent as mp
-
-
-
-
-
 import math
 import json
 import random
 import pathlib
 import numpy as np
 from collections import defaultdict
-from typing import Dict, List, Tuple
-
-from negmas import SAOResponse, ResponseType, Outcome, SAOState
-from scml.oneshot import QUANTITY, TIME, UNIT_PRICE, OneShotAgent
-from typing import Any
-
+from typing import Dict, List, Tuple, Any
 from itertools import chain, combinations
 from collections import Counter
 from numpy.random import choice
-
 import logging, csv, os, uuid, datetime
-
 import csv, os, atexit, datetime
+
+
+MODE = "COMPETITION"
+#MODE = "LOCAL"
+IS_LOCAL       = MODE == "LOCAL"        # True  → anything goes
+IS_COMPETITION = MODE == "COMPETITION"  # True  → obey all rules
+
 
 def powerset(iterable):
     """Returns the powerset of an iterable."""
@@ -83,9 +69,23 @@ _SINGLE_CSV_FILE  = None      # will hold the open file object
 _SINGLE_CSV_WRITER = None     # will hold the csv.writer
 
 
+
+
+from types import SimpleNamespace
+
 def _get_shared_writer() -> csv.writer:
     """Open logs/run.csv once per Python process and return the same writer."""
     global _SINGLE_CSV_FILE, _SINGLE_CSV_WRITER
+
+
+    if IS_COMPETITION:
+        # lightweight no‑op stand‑in
+        return SimpleNamespace(
+            writerow=lambda *a, **k: None,
+            writerows=lambda *a, **k: None,
+            flush=lambda: None,
+        )
+
 
     # First call?  -> make directory, open file, write header
     if _SINGLE_CSV_WRITER is None:
@@ -168,6 +168,7 @@ def analyze_run_csv(path: str | Path = "logs/run.csv") -> None:
       • quick sanity‑check of offer behaviour (mean q/p for propose/response)
     """
     df = _load_run(path)
+    df = df.loc[df["phase"].isin(["cb", "loop", "first", "multi"])]
 
     # ─── contract outcomes ──────────────────────────────────────────────
     successes = df.query("phase == 'cb' and action == 'success'")
@@ -256,7 +257,7 @@ class MATAgent(OneShotSyncAgent):
         self.logger.handlers.clear()
         self.logger.propagate = False             # do NOT bubble to root logger
 
-        if to_console and self.verbose:           # only attach if explicitly asked
+        if IS_LOCAL and to_console and self.verbose:           # only attach if explicitly asked
             h = logging.StreamHandler(sys.stdout)
             h.setFormatter(logging.Formatter("[%(name)s] %(message)s"))
             self.logger.addHandler(h)
@@ -265,7 +266,7 @@ class MATAgent(OneShotSyncAgent):
             self.logger.addHandler(logging.NullHandler())
 
         # choose whatever default level you like for *internal* logging calls
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.DEBUG if IS_LOCAL else logging.WARNING)
 
 
 
@@ -479,7 +480,7 @@ class MATAgent(OneShotSyncAgent):
             "FAIL",                                    # decision
             annotation.get("reason", "")               # reason
         ])
-        if self._log_file and not self._log_file.closed:
+        if IS_LOCAL and self._log_file and not self._log_file.closed:
             self._log_file.flush()                     # crash‑safe
 
         self.logger.info(f"✖ fail with {partner_field}")
@@ -612,6 +613,24 @@ class MATAgent(OneShotSyncAgent):
         # 4) almost good in late rounds
         elif abs(offered_qty - my_needs) < my_needs and step >= 18:
             decision, reason = ResponseType.ACCEPT_OFFER, "late_close"
+
+
+        # # NEW
+        # elif offered_qty > my_needs and (offered_qty - my_needs) / my_needs <= 0.05:
+        #     decision, reason = ResponseType.ACCEPT_OFFER, "rel_overshoot"
+
+        # elif offered_qty > my_needs and offered_qty - my_needs <= 2:
+        #     decision, reason = ResponseType.ACCEPT_OFFER, "abs_overshoot"
+
+        # elif offered_qty > my_needs:
+        #     # take what we need, ask partner to drop the rest
+        #     trimmed = (my_needs, offer[TIME], offered_price)
+        #     return SAOResponse(ResponseType.REJECT_OFFER, trimmed)
+
+        # elif offered_qty > my_needs:
+        #     # Accept exactly what we need, politely drop the rest
+        #     trimmed_offer = (my_needs, offer[TIME], offered_price)
+        #     return SAOResponse(ResponseType.REJECT_OFFER, trimmed_offer)
 
         # else: keep default reject
         # ----------------------------------------------------------------
@@ -773,7 +792,7 @@ if __name__ == "__main__":
     from helpers.runner import run
 
     run([MATAgent], sys.argv[1] if len(sys.argv) > 1 else "oneshot")
-    analyze_run_csv()
+    if IS_LOCAL: analyze_run_csv()
 
 # print(
         #     f"ex_pin: {self.ufun.ex_pin}, ex_qin: {self.ufun.ex_qin}, "
